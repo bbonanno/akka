@@ -15,8 +15,14 @@ import scala.concurrent.duration._
 import akka.actor.ActorInitializationException
 import com.typesafe.config.ConfigFactory
 
+object InterceptSpec {
+  final case class Msg(hello: String, replyTo: ActorRef[String])
+  case object MyPoisonPill
+}
+
 class InterceptSpec extends ActorTestKit with WordSpecLike with TypedAkkaSpecWithShutdown {
   import BehaviorInterceptor._
+  import InterceptSpec._
 
   override def config = ConfigFactory.parseString(
     """
@@ -267,6 +273,42 @@ class InterceptSpec extends ActorTestKit with WordSpecLike with TypedAkkaSpecWit
       probe.expectTerminated(ref, probe.remainingOrDefault)
     }
 
+  }
+
+  "be useful for implementing PoisonPill" in {
+
+    def inner(count: Int): Behavior[Msg] = Behaviors.receiveMessage {
+      case Msg(hello, replyTo) ⇒
+        replyTo ! s"$hello-$count"
+        inner(count + 1)
+    }
+
+    val poisonInterceptor = new BehaviorInterceptor[Any, Msg] {
+      override def aroundReceive(ctx: ActorContext[Any], msg: Any, target: ReceiveTarget[Msg]): Behavior[Msg] =
+        msg match {
+          case MyPoisonPill ⇒ Behaviors.stopped
+          case m: Msg       ⇒ target(ctx, m)
+          case _            ⇒ Behaviors.unhandled
+        }
+
+      override def aroundSignal(ctx: ActorContext[Any], signal: Signal, target: SignalTarget[Msg]): Behavior[Msg] =
+        target.apply(ctx, signal)
+
+    }
+
+    val decorated: Behavior[Msg] =
+      Behaviors.intercept(poisonInterceptor)(inner(0)).narrow
+
+    val ref = spawn(decorated)
+    val probe = TestProbe[String]()
+    ref ! Msg("hello", probe.ref)
+    probe.expectMessage("hello-0")
+    ref ! Msg("hello", probe.ref)
+    probe.expectMessage("hello-1")
+
+    ref.upcast[Any] ! MyPoisonPill
+
+    probe.expectTerminated(ref, probe.remainingOrDefault)
   }
 
 }

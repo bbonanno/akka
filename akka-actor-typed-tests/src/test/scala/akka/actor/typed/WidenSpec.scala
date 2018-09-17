@@ -12,21 +12,34 @@ import akka.actor.typed.scaladsl.Behaviors
 class WidenSpec extends ActorTestKit
   with TypedAkkaSpecWithShutdown {
 
+  def intToString(probe: ActorRef[String]): Behavior[Int] = {
+    Behaviors.receiveMessage[String] { msg ⇒
+      probe ! msg
+      Behaviors.same
+    }.widen[Int] {
+      case n if n != 13 ⇒ n.toString
+    }
+  }
+
   "Widen" should {
 
-    "transform messages from an outer type to an inner type" in {
+    "transform from an outer type to an inner type" in {
       val probe = TestProbe[String]()
-      val beh = Behaviors.receiveMessage[String] { msg ⇒
-        probe.ref ! msg
-        Behaviors.same
-      }.widen[Int] {
-        case n ⇒ n.toString
-      }
-      val ref = spawn(beh)
+      val ref = spawn(intToString(probe.ref))
 
       ref ! 42
-
       probe.expectMessage("42")
+    }
+
+    "filter messages" in {
+      val probe = TestProbe[String]()
+      val ref = spawn(intToString(probe.ref))
+
+      ref ! 42
+      ref ! 13
+      ref ! 43
+      probe.expectMessage("42")
+      probe.expectMessage("43")
     }
 
     "not build up when the same widen is used many times (initially)" in {
